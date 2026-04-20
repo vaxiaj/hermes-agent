@@ -21,6 +21,7 @@ Usage:
 """
 
 import asyncio
+import ast
 import base64
 import concurrent.futures
 import copy
@@ -1177,8 +1178,8 @@ class AIAgent:
                             if not self.quiet_mode:
                                 print("  ✓ Auto-migrated Honcho to memory provider plugin.")
                                 print("    Your config and data are preserved.\n")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning("Hermes XML function_calls fallback failed: %s", exc)
 
                 if _mem_provider_name:
                     from agent.memory_manager import MemoryManager as _MemoryManager
@@ -2237,8 +2238,70 @@ class AIAgent:
                 if review_agent is not None:
                     try:
                         review_agent.close()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning("Hermes XML function_calls fallback failed: %s", exc)
+
+                if (
+                    not getattr(assistant_message, "tool_calls", None)
+                    and assistant_message.content
+                    and self.tools
+                    and "```" in assistant_message.content
+                ):
+                    try:
+                        from openai.types.chat.chat_completion_message_tool_call import (
+                            ChatCompletionMessageToolCall,
+                            Function,
+                        )
+
+                        def _resolve_tool_name(candidate_name: str) -> str | None:
+                            for tool_def in self.tools or []:
+                                if isinstance(tool_def, dict):
+                                    func = tool_def.get("function", {})
+                                    tool_name = func.get("name") or tool_def.get("name")
+                                else:
+                                    tool_name = getattr(tool_def, "name", None)
+                                if tool_name == candidate_name:
+                                    return tool_name
+                            return None
+
+                        code_match = re.search(
+                            r"```(?:python)?\s*([A-Za-z0-9_]+)\((.*?)\)\s*```",
+                            assistant_message.content,
+                            re.DOTALL,
+                        )
+                        if code_match:
+                            candidate_name = code_match.group(1).strip()
+                            resolved_name = _resolve_tool_name(candidate_name) or _tool_name_from_registry_suffix(candidate_name)
+                            if resolved_name:
+                                parsed_expr = ast.parse(
+                                    f"{candidate_name}({code_match.group(2)})",
+                                    mode="eval",
+                                ).body
+                                if isinstance(parsed_expr, ast.Call):
+                                    kwargs = {}
+                                    for kw in parsed_expr.keywords:
+                                        if kw.arg is None:
+                                            continue
+                                        kwargs[kw.arg] = ast.literal_eval(kw.value)
+                                    assistant_message.tool_calls = [
+                                        ChatCompletionMessageToolCall(
+                                            id=f"call_{uuid.uuid4().hex[:8]}",
+                                            type="function",
+                                            function=Function(
+                                                name=resolved_name,
+                                                arguments=json.dumps(kwargs, ensure_ascii=False),
+                                            ),
+                                        )
+                                    ]
+                                    assistant_message.content = re.sub(
+                                        r"```(?:python)?\s*[A-Za-z0-9_]+\((.*?)\)\s*```",
+                                        "",
+                                        assistant_message.content,
+                                        count=1,
+                                        flags=re.DOTALL,
+                                    ).strip()
+                    except Exception as exc:
+                        logger.warning("Hermes code-block tool fallback failed: %s", exc)
 
         t = threading.Thread(target=_run_review, daemon=True, name="bg-review")
         t.start()
@@ -3420,6 +3483,91 @@ class AIAgent:
             return matches[0]
 
         return None
+
+    def _repair_tool_call_payload(self, tool_name: str, arguments=None) -> tuple[str, str] | None:
+        """Repair a tool call name and arguments into a valid executable payload.
+
+        Returns ``(tool_name, arguments_json)`` when recovery succeeds.
+        """
+        repaired_name = self._repair_tool_call(tool_name)
+        if repaired_name:
+            args_obj = arguments if isinstance(arguments, dict) else {}
+            return repaired_name, json.dumps(args_obj, ensure_ascii=False)
+
+        normalized = str(tool_name or "").lower().replace("-", "_").replace(" ", "_")
+        query_registry_aliases = {
+            "mcp_animato_get_characters": {"namespace": "characters"},
+            "mcp_animato_list_characters": {"namespace": "characters"},
+            "mcp_animato_get_scenes": {"namespace": "scenes"},
+            "mcp_animato_list_scenes": {"namespace": "scenes"},
+            "mcp_animato_get_props": {"namespace": "props"},
+            "mcp_animato_list_props": {"namespace": "props"},
+        }
+        mapped_arguments = query_registry_aliases.get(normalized)
+        if mapped_arguments and "mcp_animato_query_registry" in self.valid_tool_names:
+            merged = dict(mapped_arguments)
+            if isinstance(arguments, dict):
+                merged.update({k: v for k, v in arguments.items() if v is not None})
+            return "mcp_animato_query_registry", json.dumps(merged, ensure_ascii=False)
+
+        return None
+
+    def _recover_fenced_python_tool_calls(self, assistant_content: str):
+        """Recover simple fenced-python tool calls into structured tool_calls."""
+        if not assistant_content or not self.tools:
+            return None, None
+
+        fence_match = re.search(
+            r"```(?:python)?\s*\n?([A-Za-z_][A-Za-z0-9_]*)\((.*?)\)\s*```",
+            assistant_content,
+            re.DOTALL,
+        )
+        if not fence_match:
+            return None, None
+
+        tool_name = fence_match.group(1).strip()
+        raw_args = fence_match.group(2).strip()
+        parsed_args = {}
+        if raw_args:
+            try:
+                import ast
+
+                expr = ast.parse(f"f({raw_args})", mode="eval")
+                call_node = expr.body
+                if isinstance(call_node, ast.Call):
+                    for kw in call_node.keywords:
+                        if kw.arg is None:
+                            continue
+                        parsed_args[kw.arg] = ast.literal_eval(kw.value)
+            except Exception:
+                return None, None
+
+        repaired = self._repair_tool_call_payload(tool_name, parsed_args)
+        if not repaired:
+            return None, None
+
+        from openai.types.chat.chat_completion_message_tool_call import (
+            ChatCompletionMessageToolCall,
+            Function,
+        )
+
+        repaired_name, repaired_args_json = repaired
+        tool_call = ChatCompletionMessageToolCall(
+            id=f"call_{uuid.uuid4().hex[:8]}",
+            type="function",
+            function=Function(
+                name=repaired_name,
+                arguments=repaired_args_json,
+            ),
+        )
+        remaining = re.sub(
+            r"```(?:python)?\s*\n?[A-Za-z_][A-Za-z0-9_]*\(.*?\)\s*```",
+            "",
+            assistant_content,
+            count=1,
+            flags=re.DOTALL,
+        ).strip()
+        return remaining, [tool_call]
 
     def _invalidate_system_prompt(self):
         """
@@ -6240,6 +6388,7 @@ class AIAgent:
             }
         if self.tools:
             api_kwargs["tools"] = self.tools
+            api_kwargs["tool_choice"] = "auto"
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
@@ -8277,19 +8426,13 @@ class AIAgent:
                         if self.thinking_callback:
                             self.thinking_callback("")
 
-                    _use_streaming = True
-                    # Provider signaled "stream not supported" on a previous
-                    # attempt — switch to non-streaming for the rest of this
-                    # session instead of re-failing every retry.
-                    if getattr(self, "_disable_streaming", False):
+                    _use_streaming = not getattr(self, "_disable_streaming", False)
+                    # No display/TTS consumer: honor non-streaming mode instead of
+                    # forcing stream=true for health checks. This keeps quiet CLI
+                    # query mode compatible with proxies that explicitly reject
+                    # streaming requests.
+                    if _use_streaming and not self._has_stream_consumers():
                         _use_streaming = False
-                    elif not self._has_stream_consumers():
-                        # No display/TTS consumer. Still prefer streaming for
-                        # health checking, but skip for Mock clients in tests
-                        # (mocks return SimpleNamespace, not stream iterators).
-                        from unittest.mock import Mock
-                        if isinstance(getattr(self, "client", None), Mock):
-                            _use_streaming = False
 
                     if _use_streaming:
                         response = self._interruptible_streaming_api_call(
@@ -9628,6 +9771,161 @@ class AIAgent:
                     else:
                         assistant_message.content = str(raw)
 
+                # Some OpenAI-compatible routes return raw Hermes-style
+                # <tool_call> blocks in assistant content instead of structured
+                # tool_calls. Recover them here so quiet CLI mode can still
+                # execute MCP tools through custom proxy endpoints.
+                if (
+                    not getattr(assistant_message, "tool_calls", None)
+                    and assistant_message.content
+                    and self.tools
+                    and "<tool_call>" in assistant_message.content
+                ):
+                    try:
+                        from environments.tool_call_parsers import get_parser
+
+                        fallback_parser = get_parser("hermes")
+                        parsed_content, parsed_calls = fallback_parser.parse(
+                            assistant_message.content
+                        )
+                        if parsed_calls:
+                            assistant_message.tool_calls = parsed_calls
+                            if parsed_content is not None:
+                                assistant_message.content = parsed_content
+                    except Exception:
+                        pass
+
+                if (
+                    not getattr(assistant_message, "tool_calls", None)
+                    and assistant_message.content
+                    and self.tools
+                    and "<function_calls>" in assistant_message.content
+                ):
+                    try:
+                        from openai.types.chat.chat_completion_message_tool_call import (
+                            ChatCompletionMessageToolCall,
+                            Function,
+                        )
+
+                        def _tool_name_from_registry_suffix(suffix: str) -> str | None:
+                            for tool_def in self.tools or []:
+                                if isinstance(tool_def, dict):
+                                    func = tool_def.get("function", {})
+                                    candidate = func.get("name") or tool_def.get("name")
+                                else:
+                                    candidate = getattr(tool_def, "name", None)
+                                if candidate and candidate.endswith(f"_{suffix}"):
+                                    return candidate
+                            return None
+
+                        def _parse_simple_xml_arguments(xml_text: str) -> dict:
+                            parsed = {}
+                            for element_match in re.finditer(
+                                r"<([A-Za-z0-9_:-]+)>(.*?)</\1>",
+                                xml_text,
+                                re.DOTALL,
+                            ):
+                                key = element_match.group(1)
+                                value = re.sub(r"<[^>]+>", "", element_match.group(2)).strip()
+                                if value:
+                                    parsed[key] = value
+                            return parsed
+
+                        def _parse_native_mcp_arguments(xml_text: str) -> dict:
+                            properties = {}
+                            for prop_match in re.finditer(
+                                r'<property name="([^"]+)"[^>]*>\s*(.*?)\s*</property>',
+                                xml_text,
+                                re.DOTALL,
+                            ):
+                                key = prop_match.group(1)
+                                raw_value = prop_match.group(2)
+                                str_match = re.search(r"<string>(.*?)</string>", raw_value, re.DOTALL)
+                                if str_match:
+                                    properties[key] = str_match.group(1).strip()
+                            return properties
+
+                        parsed_calls = []
+                        for invoke_match in re.finditer(
+                            r'<invoc(?:ation|e) name="([^"]+)">(.*?)</invoc(?:ation|e)>',
+                            assistant_message.content,
+                            re.DOTALL,
+                        ):
+                            invoke_name = invoke_match.group(1).strip()
+                            invoke_body = invoke_match.group(2)
+                            resolved_name = None
+                            arguments = {}
+
+                            if invoke_name == "native_mcp":
+                                tool_name_match = re.search(
+                                    r'<parameter name="tool_name">\s*<string>(.*?)</string>\s*</parameter>',
+                                    invoke_body,
+                                    re.DOTALL,
+                                )
+                                arguments_match = re.search(
+                                    r'<parameter name="arguments">\s*<object>(.*?)</object>\s*</parameter>',
+                                    invoke_body,
+                                    re.DOTALL,
+                                )
+                                if not tool_name_match:
+                                    continue
+                                resolved_name = _tool_name_from_registry_suffix(
+                                    tool_name_match.group(1).strip()
+                                )
+                                arguments = (
+                                    _parse_native_mcp_arguments(arguments_match.group(1))
+                                    if arguments_match
+                                    else {}
+                                )
+                            else:
+                                resolved_name = invoke_name
+                                if not any(
+                                    isinstance(tool_def, dict)
+                                    and (tool_def.get("function", {}).get("name") == resolved_name
+                                         or tool_def.get("name") == resolved_name)
+                                    for tool_def in (self.tools or [])
+                                ):
+                                    resolved_name = _tool_name_from_registry_suffix(invoke_name)
+                                if not resolved_name:
+                                    continue
+                                arguments = _parse_simple_xml_arguments(invoke_body)
+
+                            parsed_calls.append(
+                                ChatCompletionMessageToolCall(
+                                    id=f"call_{uuid.uuid4().hex[:8]}",
+                                    type="function",
+                                    function=Function(
+                                        name=resolved_name,
+                                        arguments=json.dumps(arguments, ensure_ascii=False),
+                                    ),
+                                )
+                            )
+
+                        if parsed_calls:
+                            assistant_message.tool_calls = parsed_calls
+                            assistant_message.content = (
+                                assistant_message.content.split("<function_calls>", 1)[0].strip()
+                            )
+                    except Exception:
+                        pass
+
+                if (
+                    not getattr(assistant_message, "tool_calls", None)
+                    and assistant_message.content
+                    and self.tools
+                    and "```" in assistant_message.content
+                ):
+                    try:
+                        parsed_content, parsed_calls = self._recover_fenced_python_tool_calls(
+                            assistant_message.content
+                        )
+                        if parsed_calls:
+                            assistant_message.tool_calls = parsed_calls
+                            if parsed_content is not None:
+                                assistant_message.content = parsed_content
+                    except Exception:
+                        pass
+
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
                     _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
@@ -9776,10 +10074,15 @@ class AIAgent:
                     # Repair mismatched tool names before validating
                     for tc in assistant_message.tool_calls:
                         if tc.function.name not in self.valid_tool_names:
-                            repaired = self._repair_tool_call(tc.function.name)
+                            repaired = self._repair_tool_call_payload(
+                                tc.function.name,
+                                tc.function.arguments,
+                            )
                             if repaired:
-                                print(f"{self.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
-                                tc.function.name = repaired
+                                repaired_name, repaired_args_json = repaired
+                                print(f"{self.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired_name}'")
+                                tc.function.name = repaired_name
+                                tc.function.arguments = repaired_args_json
                     invalid_tool_calls = [
                         tc.function.name for tc in assistant_message.tool_calls
                         if tc.function.name not in self.valid_tool_names
