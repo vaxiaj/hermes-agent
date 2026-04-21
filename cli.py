@@ -2865,6 +2865,11 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            try:
+                from tools.mcp_tool import discover_mcp_tools
+                discover_mcp_tools()
+            except Exception as exc:
+                logging.debug("Pre-session MCP discovery failed: %s", exc)
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
