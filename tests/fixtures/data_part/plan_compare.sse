@@ -1,0 +1,5 @@
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"data","name":"plan_compare","data":{"plans":[{"planId":"plan_001","episodes":3,"status":"ready","progress":100}]}}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_plan_compare"}}

@@ -56,6 +56,11 @@ MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+ALLOWED_RESPONSE_DATA_ITEM_NAMES = frozenset({
+    "plan_compare",
+    "pipeline_status",
+    "asset_ref",
+})
 
 
 def _normalize_chat_content(
@@ -1412,8 +1417,32 @@ class APIServerAdapter(BasePlatformAdapter):
         Walks *result["messages"]* and emits:
         - ``function_call`` items for each tool_call on assistant messages
         - ``function_call_output`` items for each tool-role message
+        - ``data`` items when upstream surfaced raw Responses output items
         - a final ``message`` item with the assistant's text reply
         """
+        def _item_field(item: Any, field: str, default: Any = None) -> Any:
+            if isinstance(item, dict):
+                return item.get(field, default)
+            return getattr(item, field, default)
+
+        def _extract_data_items(raw_items: Any) -> List[Dict[str, Any]]:
+            extracted: List[Dict[str, Any]] = []
+            if not isinstance(raw_items, list):
+                return extracted
+
+            for raw_item in raw_items:
+                if _item_field(raw_item, "type") != "data":
+                    continue
+                name = _item_field(raw_item, "name")
+                if name not in ALLOWED_RESPONSE_DATA_ITEM_NAMES:
+                    continue
+                extracted.append({
+                    "type": "data",
+                    "name": name,
+                    "data": _item_field(raw_item, "data"),
+                })
+            return extracted
+
         items: List[Dict[str, Any]] = []
         messages = result.get("messages", [])
 
@@ -1435,21 +1464,31 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output": msg.get("content", ""),
                 })
 
+        raw_output_items = result.get("output_items")
+        if raw_output_items is None:
+            raw_output_items = result.get("output")
+        if raw_output_items is None:
+            response_obj = result.get("response")
+            raw_output_items = getattr(response_obj, "output", None) if response_obj is not None else None
+        data_items = _extract_data_items(raw_output_items)
+        items.extend(data_items)
+
         # Final assistant message
         final = result.get("final_response", "")
-        if not final:
+        if not final and not data_items:
             final = result.get("error", "(No response generated)")
 
-        items.append({
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "output_text",
-                    "text": final,
-                }
-            ],
-        })
+        if final or not data_items:
+            items.append({
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": final,
+                    }
+                ],
+            })
         return items
 
     # ------------------------------------------------------------------

@@ -97,6 +97,7 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.output_guards import apply_adjacent_data_text_duplication_guard
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -4036,6 +4037,9 @@ class AIAgent:
             else:
                 raise RuntimeError("Responses API returned no output items")
 
+        output = apply_adjacent_data_text_duplication_guard(output)
+        response.output = output
+
         response_status = getattr(response, "status", None)
         if isinstance(response_status, str):
             response_status = response_status.strip().lower()
@@ -4161,6 +4165,7 @@ class AIAgent:
             reasoning_content=None,
             reasoning_details=None,
             codex_reasoning_items=reasoning_items_raw or None,
+            output_items=list(output),
         )
 
         if tool_calls:
@@ -6616,6 +6621,10 @@ class AIAgent:
         codex_items = getattr(assistant_message, "codex_reasoning_items", None)
         if codex_items:
             msg["codex_reasoning_items"] = codex_items
+
+        output_items = getattr(assistant_message, "output_items", None)
+        if isinstance(output_items, list) and output_items:
+            msg["output_items"] = output_items
 
         if assistant_message.tool_calls:
             tool_calls = []
@@ -10782,11 +10791,18 @@ class AIAgent:
                 last_reasoning = msg["reasoning"]
                 break
 
+        last_output_items = None
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant" and isinstance(msg.get("output_items"), list):
+                last_output_items = msg["output_items"]
+                break
+
         # Build result with interrupt info if applicable
         result = {
             "final_response": final_response,
             "last_reasoning": last_reasoning,
             "messages": messages,
+            "output_items": last_output_items,
             "api_calls": api_call_count,
             "completed": completed,
             "partial": False,  # True only when stopped due to invalid tool calls

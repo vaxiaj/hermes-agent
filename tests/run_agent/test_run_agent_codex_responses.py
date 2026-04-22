@@ -1197,3 +1197,58 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     assert reasoning_ids.count("rs_xyz") == 1
     assert reasoning_ids.count("rs_zzz") == 1
     assert len(reasoning_items) == 2
+
+
+def test_normalize_codex_response_preserves_data_output_items(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="data",
+                name="pipeline_status",
+                data={"status": "ready", "stage": "render"},
+            ),
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="Pipeline ready")],
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=12, output_tokens=4, total_tokens=16),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "Pipeline ready"
+    assert isinstance(assistant_message.output_items, list)
+    assert assistant_message.output_items[0].type == "data"
+    assert assistant_message.output_items[0].name == "pipeline_status"
+
+
+def test_build_assistant_message_keeps_data_output_items(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="data",
+                name="pipeline_status",
+                data={"status": "ready", "stage": "render"},
+            ),
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="Pipeline ready")],
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=12, output_tokens=4, total_tokens=16),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+    msg = agent._build_assistant_message(assistant_message, finish_reason)
+
+    assert isinstance(msg["output_items"], list)
+    assert msg["output_items"][0].type == "data"
+    assert msg["output_items"][0].name == "pipeline_status"

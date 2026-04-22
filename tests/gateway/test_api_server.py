@@ -15,6 +15,7 @@ Tests cover:
 import json
 import time
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1369,6 +1370,115 @@ class TestToolCallsInOutput:
             assert output[1]["output"] == "42"
             assert output[2]["type"] == "message"
             assert output[2]["content"][0]["text"] == "The result is 42."
+
+    @pytest.mark.asyncio
+    async def test_data_output_items_are_exposed_with_allowlist(self, adapter):
+        """Allowed data items are surfaced; unknown names are dropped."""
+        mock_result = {
+            "final_response": "Pipeline updated.",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_pipeline",
+                            "function": {
+                                "name": "pipeline_tool",
+                                "arguments": '{"step": "status"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_pipeline",
+                    "content": '{"ok": true}',
+                },
+            ],
+            "output_items": [
+                SimpleNamespace(
+                    type="data",
+                    name="pipeline_status",
+                    data={"state": "ready", "progress": 100},
+                ),
+                SimpleNamespace(
+                    type="data",
+                    name="unknown_name",
+                    data={"leak": True},
+                ),
+                SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    content=[SimpleNamespace(type="output_text", text="ignored duplicate")],
+                ),
+            ],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "show pipeline"},
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            output = data["output"]
+
+            assert [item["type"] for item in output] == [
+                "function_call",
+                "function_call_output",
+                "data",
+                "message",
+            ]
+            assert output[2] == {
+                "type": "data",
+                "name": "pipeline_status",
+                "data": {"state": "ready", "progress": 100},
+            }
+            assert all(item.get("name") != "unknown_name" for item in output if item["type"] == "data")
+            assert output[3]["content"][0]["text"] == "Pipeline updated."
+
+    @pytest.mark.asyncio
+    async def test_data_output_items_without_final_text_do_not_emit_placeholder_message(self, adapter):
+        mock_result = {
+            "final_response": "",
+            "messages": [],
+            "output_items": [
+                SimpleNamespace(
+                    type="data",
+                    name="asset_ref",
+                    data={"id": "asset_001", "label": "Hero", "kind": "character"},
+                ),
+            ],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "show asset"},
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["output"] == [
+                {
+                    "type": "data",
+                    "name": "asset_ref",
+                    "data": {"id": "asset_001", "label": "Hero", "kind": "character"},
+                }
+            ]
 
     @pytest.mark.asyncio
     async def test_no_tool_calls_still_works(self, adapter):
