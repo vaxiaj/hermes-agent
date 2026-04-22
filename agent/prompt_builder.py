@@ -244,6 +244,16 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "confirm scope before executing.\n"
     "</verification>\n"
     "\n"
+    "<missing_context>\n"
+    "- If required context is missing, do NOT guess or hallucinate an answer.\n"
+    "- Use the appropriate lookup tool when missing information is retrievable "
+    "(search_files, web_search, read_file, etc.).\n"
+    "- Ask a clarifying question only when the information cannot be retrieved by tools.\n"
+    "- If you must proceed with incomplete information, label assumptions explicitly.\n"
+    "</missing_context>"
+)
+
+STRUCTURED_OUTPUT_B7_GUIDANCE = (
     "<structured_output_b7>\n"
     "- B7: when adjacent `data` and `text` items appear in structured output, "
     "treat the text as a duplicate only when it exactly equals one exact field value "
@@ -253,15 +263,7 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- On a B7 hit, delete the duplicate text item and keep the data item. "
     "Do not retry, do not delete the data item to keep text, and do not downgrade "
     "the data item into plain text.\n"
-    "</structured_output_b7>\n"
-    "\n"
-    "<missing_context>\n"
-    "- If required context is missing, do NOT guess or hallucinate an answer.\n"
-    "- Use the appropriate lookup tool when missing information is retrievable "
-    "(search_files, web_search, read_file, etc.).\n"
-    "- Ask a clarifying question only when the information cannot be retrieved by tools.\n"
-    "- If you must proceed with incomplete information, label assumptions explicitly.\n"
-    "</missing_context>"
+    "</structured_output_b7>"
 )
 
 # Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
