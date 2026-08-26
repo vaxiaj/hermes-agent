@@ -2696,6 +2696,29 @@ class TestCredentialPoolRecovery:
         assert context["message"] == "Weekly credits exhausted."
         assert context["reset_at"] == "2026-04-12T10:30:00Z"
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"error_code": "AUTH_REQUIRED", "reason": "fingerprint_mismatch", "message": "machine fingerprint is required"},
+            {"error": {"message": "Machine fingerprint does not match"}},
+        ],
+    )
+    def test_machine_fingerprint_auth_error_is_identified(self, agent, body):
+        assert agent._is_machine_fingerprint_auth_error(SimpleNamespace(body=body)) is True
+
+    def test_api_key_auth_error_is_not_misidentified_as_fingerprint(self, agent):
+        error = SimpleNamespace(body={"error": {"message": "Invalid API key"}})
+        assert agent._is_machine_fingerprint_auth_error(error) is False
+
+    def test_machine_fingerprint_guidance_retains_reason_without_api_key_claim(self, agent):
+        error = SimpleNamespace(
+            body={"error_code": "AUTH_REQUIRED", "reason": "fingerprint_mismatch", "message": "machine fingerprint is required"},
+            status_code=401,
+        )
+        guidance = "\n".join(agent._machine_fingerprint_auth_guidance(error))
+        assert "machine fingerprint is required" in guidance
+        assert "API key was rejected" not in guidance
+
     def test_recover_with_pool_passes_error_context_on_rotated_429(self, agent):
         next_entry = SimpleNamespace(label="secondary")
         captured = {}

@@ -2670,6 +2670,26 @@ class AIAgent:
         prefix = f"HTTP {status_code}: " if status_code else ""
         return f"{prefix}{raw[:500]}"
 
+    @staticmethod
+    def _is_machine_fingerprint_auth_error(error: Exception) -> bool:
+        """Return whether an auth failure identifies a machine fingerprint problem."""
+        body = getattr(error, "body", None)
+        payload = body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), dict) else body
+        if not isinstance(payload, dict):
+            return False
+        fields = (payload.get("reason"), payload.get("error_code"), payload.get("message"))
+        normalized = " ".join(str(value).lower() for value in fields if value is not None)
+        return "fingerprint_mismatch" in normalized or "machine fingerprint" in normalized
+
+    @classmethod
+    def _machine_fingerprint_auth_guidance(cls, error: Exception) -> List[str]:
+        """Build actionable guidance while retaining the provider's real reason."""
+        return [
+            f"Machine fingerprint authentication failed: {cls._summarize_api_error(error)}",
+            "Is X-Machine-Fingerprint configured for this custom provider?",
+            "Does it match the fingerprint expected by the endpoint?",
+        ]
+
     def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
         if not key:
             return None
@@ -9567,6 +9587,11 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
                                 self._vprint(f"{self.log_prefix}      1. Run `codex` in your terminal to generate fresh tokens.", force=True)
                                 self._vprint(f"{self.log_prefix}      2. Then run `hermes auth` to re-authenticate.", force=True)
+                            elif self._is_machine_fingerprint_auth_error(api_error):
+                                guidance = self._machine_fingerprint_auth_guidance(api_error)
+                                self._vprint(f"{self.log_prefix}   💡 {guidance[0]}", force=True)
+                                for item in guidance[1:]:
+                                    self._vprint(f"{self.log_prefix}      • {item}", force=True)
                             else:
                                 self._vprint(f"{self.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
                                 self._vprint(f"{self.log_prefix}      • Is the key valid? Run: hermes setup", force=True)
