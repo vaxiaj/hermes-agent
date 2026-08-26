@@ -200,6 +200,34 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.api_mode == "codex_responses"
 
 
+def test_runtime_resolution_rebuilds_agent_on_default_header_change(monkeypatch):
+    cli = _import_cli()
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://127.0.0.1:8080/api/llm",
+            "api_key": "same-key",
+            "default_headers": {"X-Machine-Fingerprint": "dev-machine"},
+            "source": "config",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(model="chat_primary", compact=True, max_turns=1)
+    shell.provider = "custom"
+    shell.api_mode = "chat_completions"
+    shell.base_url = "http://127.0.0.1:8080/api/llm"
+    shell.api_key = "same-key"
+    shell.agent = object()
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.agent is None
+    assert shell.default_headers == {"X-Machine-Fingerprint": "dev-machine"}
+
+
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     cli = _import_cli()
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)

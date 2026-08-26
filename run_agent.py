@@ -553,6 +553,7 @@ class AIAgent:
         self,
         base_url: str = None,
         api_key: str = None,
+        default_headers: Dict[str, str] = None,
         provider: str = None,
         api_mode: str = None,
         acp_command: str = None,
@@ -946,6 +947,13 @@ class AIAgent:
                             "X-OpenRouter-Categories": "productivity,cli-agent",
                         },
                     }
+
+            from hermes_cli.runtime_provider import validate_default_headers
+            configured_headers = validate_default_headers(default_headers)
+            if configured_headers:
+                merged_headers = dict(client_kwargs.get("default_headers") or {})
+                merged_headers.update(configured_headers)
+                client_kwargs["default_headers"] = merged_headers
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 

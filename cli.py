@@ -1682,6 +1682,7 @@ class HermesCLI:
         self.api_mode = "chat_completions"
         self.acp_command: Optional[str] = None
         self.acp_args: list[str] = []
+        self.default_headers: dict[str, str] = {}
         self.base_url = (
             base_url
             or CLI_CONFIG["model"].get("base_url", "")
@@ -2686,6 +2687,7 @@ class HermesCLI:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
+        resolved_default_headers = dict(runtime.get("default_headers") or {})
         if not isinstance(api_key, str) or not api_key:
             # Custom / local endpoints (llama.cpp, ollama, vLLM, etc.) often
             # don't require authentication.  When a base_url IS configured but
@@ -2709,7 +2711,11 @@ class HermesCLI:
                   "Check your provider config or run: hermes setup")
             return False
 
-        credentials_changed = api_key != self.api_key or base_url != self.base_url
+        credentials_changed = (
+            api_key != self.api_key
+            or base_url != self.base_url
+            or resolved_default_headers != self.default_headers
+        )
         routing_changed = (
             resolved_provider != self.provider
             or resolved_api_mode != self.api_mode
@@ -2721,6 +2727,7 @@ class HermesCLI:
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
         self._credential_pool = resolved_credential_pool
+        self.default_headers = resolved_default_headers
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -2776,6 +2783,7 @@ class HermesCLI:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "default_headers": dict(self.default_headers),
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
@@ -2876,6 +2884,7 @@ class HermesCLI:
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
                 api_mode=runtime.get("api_mode"),
+                default_headers=runtime.get("default_headers"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),

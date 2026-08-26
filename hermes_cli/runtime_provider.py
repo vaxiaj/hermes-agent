@@ -127,6 +127,25 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
 _VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages"}
 
 
+def validate_default_headers(raw: Any) -> Dict[str, str]:
+    """Validate optional provider-scoped OpenAI client headers from config."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("model.default_headers must be a mapping of string header names to string values")
+
+    headers: Dict[str, str] = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("model.default_headers contains an empty or non-string header name")
+        if name.strip().lower() == "authorization":
+            raise ValueError("model.default_headers must not override Authorization")
+        if not isinstance(value, str):
+            raise ValueError(f"model.default_headers.{name.strip()} must be a string")
+        headers[name.strip()] = value
+    return headers
+
+
 def _parse_api_mode(raw: Any) -> Optional[str]:
     """Validate an api_mode value from config. Returns None if invalid."""
     if isinstance(raw, str):
@@ -507,6 +526,9 @@ def _resolve_openrouter_runtime(
         or "chat_completions",
         "base_url": base_url,
         "api_key": api_key,
+        "default_headers": validate_default_headers(model_cfg.get("default_headers"))
+        if effective_provider == "custom"
+        else {},
         "source": source,
     }
 

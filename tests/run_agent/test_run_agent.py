@@ -84,6 +84,38 @@ def agent_with_memory_tool():
         return a
 
 
+def test_aiagent_custom_default_headers_survive_client_rebuild():
+    created = []
+
+    def _fake_openai(**kwargs):
+        created.append(kwargs)
+        return MagicMock()
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI", side_effect=_fake_openai),
+    ):
+        agent = AIAgent(
+            api_key="proxy-key",
+            base_url="http://127.0.0.1:8080/api/llm",
+            provider="custom",
+            default_headers={"X-Machine-Fingerprint": "dev-machine"},
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent._create_openai_client(
+            dict(agent._client_kwargs), reason="test_rebuild", shared=True
+        )
+
+    assert len(created) == 2
+    assert created[0]["default_headers"] == {
+        "X-Machine-Fingerprint": "dev-machine"
+    }
+    assert created[1]["default_headers"] == created[0]["default_headers"]
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()

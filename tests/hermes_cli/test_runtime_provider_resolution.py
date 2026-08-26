@@ -1,3 +1,5 @@
+import pytest
+
 from hermes_cli import runtime_provider as rp
 
 
@@ -446,6 +448,52 @@ def test_custom_endpoint_prefers_openai_key(monkeypatch):
 
     assert resolved["base_url"] == "https://api.z.ai/api/coding/paas/v4"
     assert resolved["api_key"] == "zai-key"
+
+
+def test_custom_endpoint_preserves_validated_default_headers(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:8080/api/llm",
+            "api_key": "proxy-key",
+            "default_headers": {"X-Machine-Fingerprint": "dev-machine"},
+        },
+    )
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["default_headers"] == {
+        "X-Machine-Fingerprint": "dev-machine"
+    }
+
+
+@pytest.mark.parametrize(
+    "headers, message",
+    [
+        ({"": "value"}, "empty or non-string header name"),
+        ({"X-Test": 1}, "X-Test must be a string"),
+        ({"authorization": "Bearer shadow"}, "must not override Authorization"),
+    ],
+)
+def test_custom_endpoint_rejects_unsafe_default_headers(monkeypatch, headers, message):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:8080/api/llm",
+            "api_key": "proxy-key",
+            "default_headers": headers,
+        },
+    )
+
+    with pytest.raises(ValueError, match=message):
+        rp.resolve_runtime_provider(requested="custom")
 
 
 def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):
