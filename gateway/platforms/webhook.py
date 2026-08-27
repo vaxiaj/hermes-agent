@@ -26,10 +26,12 @@ import asyncio
 import hashlib
 import hmac
 import json
+import importlib
 import logging
 import os
 import re
 import subprocess
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -340,6 +342,11 @@ class WebhookAdapter(BasePlatformAdapter):
                     {"error": "Cannot parse body"}, status=400
                 )
 
+        if route_config.get("deterministic_executor"):
+            return await self._handle_deterministic_webhook(
+                request, route_config, payload, raw_body
+            )
+
         # Check event type filter
         event_type = (
             request.headers.get("X-GitHub-Event", "")
@@ -477,6 +484,49 @@ class WebhookAdapter(BasePlatformAdapter):
             status=202,
         )
 
+    async def _handle_deterministic_webhook(
+        self, request: "web.Request", route_config: dict, payload: dict, raw_body: bytes
+    ) -> "web.Response":
+        """Persist an Animato inbox claim before returning an acceptance receipt."""
+        executor_path = os.path.abspath(os.path.expanduser(route_config["deterministic_executor"]))
+        if payload.get("protocol_version") != request.headers.get("X-Animato-Protocol"):
+            return web.json_response({"error": "protocol identity mismatch"}, status=400)
+        if payload.get("delivery_id") != request.headers.get("X-Request-ID"):
+            return web.json_response({"error": "delivery identity mismatch"}, status=400)
+        skill_dir = os.path.dirname(executor_path)
+        skills_root = os.path.dirname(skill_dir)
+        if not os.path.isfile(executor_path):
+            return web.json_response({"error": "deterministic executor unavailable"}, status=503)
+        try:
+            if skills_root not in sys.path:
+                sys.path.insert(0, skills_root)
+            if skill_dir not in sys.path:
+                sys.path.insert(0, skill_dir)
+            module = importlib.import_module("listener_entry")
+            raw_input = raw_body.decode("utf-8")
+            registry_path = route_config["registry_path"]
+            receipt = await asyncio.to_thread(
+                module.claim_webhook_invocation,
+                raw_input,
+                registry_path=registry_path,
+            )
+        except ValueError as exc:
+            status = 409 if "conflicting delivery identity" in str(exc) else 400
+            return web.json_response({"error": str(exc)}, status=status)
+        except Exception as exc:
+            logger.exception("[webhook] deterministic claim failed")
+            return web.json_response({"error": "deterministic executor unavailable", "detail": str(exc)}, status=503)
+
+        task = asyncio.create_task(asyncio.to_thread(
+            module.process_webhook_invocation,
+            raw_input,
+            registry_path=registry_path,
+            helper_path=route_config["helper_path"],
+        ))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return web.json_response(receipt, status=200)
+
     # ------------------------------------------------------------------
     # Signature validation
     # ------------------------------------------------------------------
@@ -498,9 +548,19 @@ class WebhookAdapter(BasePlatformAdapter):
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
 
-        # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
+        # Animato v2 binds protocol, timestamp, delivery identity and raw body.
         generic_sig = request.headers.get("X-Webhook-Signature", "")
         if generic_sig:
+            protocol = request.headers.get("X-Animato-Protocol", "")
+            timestamp = request.headers.get("X-Animato-Timestamp", "")
+            delivery_id = request.headers.get("X-Request-ID", "")
+            if protocol:
+                try:
+                    if abs(int(time.time() * 1000) - int(timestamp)) > 300_000:
+                        return False
+                except (TypeError, ValueError):
+                    return False
+                body = b"\n".join((protocol.encode(), timestamp.encode(), delivery_id.encode(), body))
             expected = hmac.new(
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()

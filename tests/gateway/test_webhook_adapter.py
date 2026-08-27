@@ -170,6 +170,37 @@ class TestValidateSignature:
         req = _mock_request(headers={"X-Webhook-Signature": sig})
         assert adapter._validate_signature(req, body, secret) is True
 
+    def test_validate_animato_v2_signature_binds_timestamp_and_delivery(self):
+        adapter = _make_adapter()
+        body = b'{"protocol_version":"animato-async/v2"}'
+        secret = "generic-secret"
+        timestamp = str(int(time.time() * 1000))
+        delivery_id = "delivery-1"
+        signed = b"\n".join((b"animato-async/v2", timestamp.encode(), delivery_id.encode(), body))
+        req = _mock_request(headers={
+            "X-Animato-Protocol": "animato-async/v2",
+            "X-Animato-Timestamp": timestamp,
+            "X-Request-ID": delivery_id,
+            "X-Webhook-Signature": _generic_signature(signed, secret),
+        })
+        assert adapter._validate_signature(req, body, secret) is True
+        req.headers["X-Request-ID"] = "delivery-2"
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_animato_v2_signature_rejects_expired_timestamp(self):
+        adapter = _make_adapter()
+        body = b"{}"
+        secret = "generic-secret"
+        timestamp = str(int(time.time() * 1000) - 300_001)
+        signed = b"\n".join((b"animato-async/v2", timestamp.encode(), b"delivery-1", body))
+        req = _mock_request(headers={
+            "X-Animato-Protocol": "animato-async/v2",
+            "X-Animato-Timestamp": timestamp,
+            "X-Request-ID": "delivery-1",
+            "X-Webhook-Signature": _generic_signature(signed, secret),
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
 
 # ===================================================================
 # Prompt rendering
