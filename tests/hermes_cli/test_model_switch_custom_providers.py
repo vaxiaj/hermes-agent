@@ -73,6 +73,8 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
             "api_key": "no-key-required",
             "base_url": "http://127.0.0.1:4141/v1",
             "api_mode": "chat_completions",
+            "provider": "custom:local-(127.0.0.1:4141)",
+            "default_headers": {"X-Machine-Fingerprint": "dev-machine"},
         },
     )
     monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
@@ -102,3 +104,6 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.new_model == "rotator-openrouter-coding"
     assert result.base_url == "http://127.0.0.1:4141/v1"
     assert result.api_key == "no-key-required"
+    assert result.runtime["default_headers"] == {
+        "X-Machine-Fingerprint": "dev-machine"
+    }

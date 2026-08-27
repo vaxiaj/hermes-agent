@@ -95,6 +95,7 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
         "command": None,
         "args": [],
         "credential_pool": None,
+        "default_headers": {"X-Machine-Fingerprint": "dev-machine"},
     }
 
     with patch("agent.smart_model_routing.resolve_turn_route", return_value={
@@ -107,6 +108,9 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
 
     assert route["runtime"]["provider"] == "openrouter"
     assert route["runtime"]["api_mode"] == "chat_completions"
+    assert route["runtime"]["default_headers"] == {
+        "X-Machine-Fingerprint": "dev-machine"
+    }
     assert route["request_overrides"] == {"service_tier": "priority"}
 
 

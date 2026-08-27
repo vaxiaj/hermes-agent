@@ -2773,21 +2773,21 @@ class HermesCLI:
         """Resolve model/runtime overrides for a single user turn."""
         from agent.smart_model_routing import resolve_turn_route
         from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.runtime_provider import project_runtime_agent_kwargs
 
         route = resolve_turn_route(
             user_message,
             self._smart_model_routing,
-            {
-                "model": self.model,
+            {"model": self.model, **project_runtime_agent_kwargs({
                 "api_key": self.api_key,
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
-                "default_headers": dict(self.default_headers),
+                "default_headers": dict(getattr(self, "default_headers", {}) or {}),
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
-            },
+            })},
         )
 
         service_tier = getattr(self, "service_tier", None)
@@ -4572,6 +4572,7 @@ class HermesCLI:
             self._explicit_base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
+        self.default_headers = dict(result.runtime.get("default_headers") or {})
 
         if self.agent is not None:
             try:
@@ -4581,6 +4582,7 @@ class HermesCLI:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    runtime=result.runtime,
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
@@ -4789,6 +4791,7 @@ class HermesCLI:
             self._explicit_base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
+        self.default_headers = dict(result.runtime.get("default_headers") or {})
 
         # Apply to running agent (in-place swap)
         if self.agent is not None:
@@ -4799,6 +4802,7 @@ class HermesCLI:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    runtime=result.runtime,
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")

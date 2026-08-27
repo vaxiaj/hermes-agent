@@ -116,6 +116,45 @@ def test_aiagent_custom_default_headers_survive_client_rebuild():
     assert created[1]["default_headers"] == created[0]["default_headers"]
 
 
+def test_custom_headers_survive_same_endpoint_rotation_but_not_endpoint_change():
+    with patch.object(AIAgent, "_create_openai_client", return_value=MagicMock()):
+        agent = AIAgent(
+            model="chat_primary",
+            provider="custom",
+            api_key="sk-old",
+            base_url="http://127.0.0.1:8080/api/llm",
+            default_headers={"X-Machine-Fingerprint": "dev-machine"},
+        )
+
+    agent._client_kwargs = {
+        "api_key": "sk-new",
+        "base_url": "http://127.0.0.1:8080/api/llm",
+    }
+    agent._apply_client_headers_for_base_url("http://127.0.0.1:8080/api/llm/")
+    assert agent._client_kwargs["default_headers"] == {
+        "X-Machine-Fingerprint": "dev-machine"
+    }
+
+    agent._apply_client_headers_for_base_url("https://other.example/v1")
+    assert "default_headers" not in agent._client_kwargs
+
+
+def test_gateway_agent_cache_identity_changes_with_custom_headers():
+    from gateway.run import GatewayRunner
+
+    base = {
+        "api_key": "sk-test",
+        "base_url": "http://127.0.0.1:8080/api/llm",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "default_headers": {"X-Machine-Fingerprint": "dev-machine"},
+    }
+    changed = {**base, "default_headers": {"X-Machine-Fingerprint": "other-machine"}}
+    assert GatewayRunner._agent_config_signature("chat_primary", base, [], "") != (
+        GatewayRunner._agent_config_signature("chat_primary", changed, [], "")
+    )
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()

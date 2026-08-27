@@ -112,20 +112,13 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
 
     Returns a dict with model/runtime/signature/label fields.
     """
+    from hermes_cli.runtime_provider import project_runtime_agent_kwargs
+
     route = choose_cheap_model_route(user_message, routing_config)
     if not route:
         return {
             "model": primary.get("model"),
-            "runtime": {
-                "api_key": primary.get("api_key"),
-                "base_url": primary.get("base_url"),
-                "provider": primary.get("provider"),
-                "api_mode": primary.get("api_mode"),
-                "default_headers": dict(primary.get("default_headers") or {}),
-                "command": primary.get("command"),
-                "args": list(primary.get("args") or []),
-                "credential_pool": primary.get("credential_pool"),
-            },
+            "runtime": project_runtime_agent_kwargs(primary),
             "label": None,
             "signature": (
                 primary.get("model"),
@@ -153,16 +146,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
     except Exception:
         return {
             "model": primary.get("model"),
-            "runtime": {
-                "api_key": primary.get("api_key"),
-                "base_url": primary.get("base_url"),
-                "provider": primary.get("provider"),
-                "api_mode": primary.get("api_mode"),
-                "default_headers": dict(primary.get("default_headers") or {}),
-                "command": primary.get("command"),
-                "args": list(primary.get("args") or []),
-                "credential_pool": primary.get("credential_pool"),
-            },
+            "runtime": project_runtime_agent_kwargs(primary),
             "label": None,
             "signature": (
                 primary.get("model"),
@@ -176,16 +160,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
 
     return {
         "model": route.get("model"),
-        "runtime": {
-            "api_key": runtime.get("api_key"),
-            "base_url": runtime.get("base_url"),
-            "provider": runtime.get("provider"),
-            "api_mode": runtime.get("api_mode"),
-            "default_headers": dict(runtime.get("default_headers") or {}),
-            "command": runtime.get("command"),
-            "args": list(runtime.get("args") or []),
-            "credential_pool": runtime.get("credential_pool"),
-        },
+        "runtime": project_runtime_agent_kwargs(runtime),
         "label": f"smart route → {route.get('model')} ({runtime.get('provider')})",
         "signature": (
             route.get("model"),

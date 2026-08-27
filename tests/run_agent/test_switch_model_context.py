@@ -72,3 +72,25 @@ def test_switch_model_without_config_context_length():
         mock_ctx_len.assert_called_once()
         call_kwargs = mock_ctx_len.call_args.kwargs
         assert call_kwargs.get("config_context_length") is None
+
+
+def test_switch_model_consumes_complete_custom_runtime_bundle():
+    agent = _make_agent_with_compressor(config_context_length=None)
+    runtime = {
+        "provider": "custom",
+        "api_key": "sk-local",
+        "base_url": "http://127.0.0.1:8080/api/llm",
+        "api_mode": "chat_completions",
+        "default_headers": {"X-Machine-Fingerprint": "dev-machine"},
+    }
+
+    with patch.object(agent, "_create_openai_client", return_value=MagicMock()) as create:
+        with patch("agent.model_metadata.get_model_context_length", return_value=128_000):
+            agent.switch_model("chat_primary", "custom", runtime=runtime)
+
+    assert create.call_args.args[0]["default_headers"] == {
+        "X-Machine-Fingerprint": "dev-machine"
+    }
+    assert agent._primary_runtime["client_kwargs"]["default_headers"] == {
+        "X-Machine-Fingerprint": "dev-machine"
+    }

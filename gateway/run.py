@@ -321,6 +321,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
+        project_runtime_agent_kwargs,
     )
 
     try:
@@ -330,16 +331,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
-    return {
-        "api_key": runtime.get("api_key"),
-        "base_url": runtime.get("base_url"),
-        "provider": runtime.get("provider"),
-        "api_mode": runtime.get("api_mode"),
-        "default_headers": dict(runtime.get("default_headers") or {}),
-        "command": runtime.get("command"),
-        "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool"),
-    }
+    return project_runtime_agent_kwargs(runtime)
 
 
 def _build_media_placeholder(event) -> str:
@@ -872,12 +864,10 @@ class GatewayRunner:
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
             override_model = override.get("model", model)
-            override_runtime = {
-                "provider": override.get("provider"),
-                "api_key": override.get("api_key"),
-                "base_url": override.get("base_url"),
-                "api_mode": override.get("api_mode"),
-            }
+            from hermes_cli.runtime_provider import project_runtime_agent_kwargs
+            override_runtime = project_runtime_agent_kwargs(
+                override.get("runtime") or override
+            )
             if override_runtime.get("api_key"):
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
@@ -925,17 +915,9 @@ class GatewayRunner:
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         from agent.smart_model_routing import resolve_turn_route
         from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.runtime_provider import project_runtime_agent_kwargs
 
-        primary = {
-            "model": model,
-            "api_key": runtime_kwargs.get("api_key"),
-            "base_url": runtime_kwargs.get("base_url"),
-            "provider": runtime_kwargs.get("provider"),
-            "api_mode": runtime_kwargs.get("api_mode"),
-            "command": runtime_kwargs.get("command"),
-            "args": list(runtime_kwargs.get("args") or []),
-            "credential_pool": runtime_kwargs.get("credential_pool"),
-        }
+        primary = {"model": model, **project_runtime_agent_kwargs(runtime_kwargs)}
         route = resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
 
         service_tier = getattr(self, "_service_tier", None)
@@ -4383,6 +4365,7 @@ class GatewayRunner:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    runtime=result.runtime,
                                 )
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
@@ -4397,10 +4380,7 @@ class GatewayRunner:
                         )
                         _self._session_model_overrides[_session_key] = {
                             "model": result.new_model,
-                            "provider": result.target_provider,
-                            "api_key": result.api_key,
-                            "base_url": result.base_url,
-                            "api_mode": result.api_mode,
+                            "runtime": dict(result.runtime),
                         }
 
                         # Evict cached agent so the next turn creates a fresh
@@ -4498,6 +4478,7 @@ class GatewayRunner:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    runtime=result.runtime,
                 )
             except Exception as exc:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
@@ -4515,10 +4496,7 @@ class GatewayRunner:
         # Store session override so next agent creation uses the new model
         self._session_model_overrides[session_key] = {
             "model": result.new_model,
-            "provider": result.target_provider,
-            "api_key": result.api_key,
-            "base_url": result.base_url,
-            "api_mode": result.api_mode,
+            "runtime": dict(result.runtime),
         }
 
         # Evict cached agent so the next turn creates a fresh agent from the
@@ -7349,14 +7327,13 @@ class GatewayRunner:
         # switches if only the first few characters are considered.
         _api_key = str(runtime.get("api_key", "") or "")
         _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
+        from hermes_cli.runtime_provider import runtime_agent_identity
 
         blob = _j.dumps(
             [
                 model,
                 _api_key_fingerprint,
-                runtime.get("base_url", ""),
-                runtime.get("provider", ""),
-                runtime.get("api_mode", ""),
+                runtime_agent_identity(runtime),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
@@ -7382,8 +7359,11 @@ class GatewayRunner:
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode"):
-            val = override.get(key)
+        from hermes_cli.runtime_provider import project_runtime_agent_kwargs
+        override_runtime = project_runtime_agent_kwargs(
+            override.get("runtime") or override
+        )
+        for key, val in override_runtime.items():
             if val is not None:
                 runtime_kwargs[key] = val
         return model, runtime_kwargs

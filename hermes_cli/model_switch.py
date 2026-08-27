@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, NamedTuple, Optional
 
 from hermes_cli.providers import (
@@ -235,6 +235,7 @@ class ModelSwitchResult:
     api_key: str = ""
     base_url: str = ""
     api_mode: str = ""
+    runtime: dict = field(default_factory=dict)
     error_message: str = ""
     warning_message: str = ""
     provider_label: str = ""
@@ -640,6 +641,7 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    runtime: dict = {}
 
     if provider_changed or explicit_provider:
         try:
@@ -672,7 +674,10 @@ def switch_model(
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
         if _da is not None and _da.base_url:
+            previous_base_url = base_url
             base_url = _da.base_url
+            if base_url != previous_base_url:
+                runtime = {}
             if not api_key:
                 api_key = "no-key-required"
 
@@ -729,6 +734,15 @@ def switch_model(
         warnings.append(hermes_warn)
 
     # --- Build result ---
+    from hermes_cli.runtime_provider import project_runtime_agent_kwargs
+    resolved_runtime = project_runtime_agent_kwargs({
+        **runtime,
+        "api_key": api_key,
+        "base_url": base_url,
+        "provider": target_provider,
+        "api_mode": api_mode,
+    })
+
     return ModelSwitchResult(
         success=True,
         new_model=new_model,
@@ -737,6 +751,7 @@ def switch_model(
         api_key=api_key,
         base_url=base_url,
         api_mode=api_mode,
+        runtime=resolved_runtime,
         warning_message=" | ".join(warnings) if warnings else "",
         provider_label=provider_label,
         resolved_via_alias=resolved_alias,
@@ -1009,5 +1024,3 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
-

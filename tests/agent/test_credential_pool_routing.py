@@ -173,6 +173,7 @@ class TestGatewayTurnRoutePool:
             "command": None,
             "args": [],
             "credential_pool": MagicMock(name="FakePool"),
+            "default_headers": {"X-Machine-Fingerprint": "dev-machine"},
         }
 
         bound = GatewayRunner._resolve_turn_agent_config.__get__(runner)
@@ -180,6 +181,60 @@ class TestGatewayTurnRoutePool:
 
         assert "credential_pool" in captured["primary"]
         assert captured["primary"]["credential_pool"] is runtime_kwargs["credential_pool"]
+        assert captured["primary"]["default_headers"] == {
+            "X-Machine-Fingerprint": "dev-machine"
+        }
+
+    def test_session_override_fast_path_keeps_complete_runtime_bundle(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {
+            "provider": "custom",
+            "api_key": "sk-test",
+            "base_url": "http://127.0.0.1:8080/api/llm",
+            "api_mode": "chat_completions",
+            "default_headers": {"X-Machine-Fingerprint": "dev-machine"},
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        }
+        runner = SimpleNamespace(
+            _session_model_overrides={
+                "session-1": {"model": "chat_primary", "runtime": runtime}
+            }
+        )
+        bound = GatewayRunner._resolve_session_agent_runtime.__get__(runner)
+        model, resolved = bound(session_key="session-1", user_config={})
+        assert model == "chat_primary"
+        assert resolved == runtime
+
+    def test_gateway_route_reaches_openai_client_header_boundary(self):
+        from gateway.run import GatewayRunner
+        from run_agent import AIAgent
+
+        runner = SimpleNamespace(_smart_model_routing={})
+        runtime = {
+            "provider": "custom",
+            "api_key": "sk-test",
+            "base_url": "http://127.0.0.1:8080/api/llm",
+            "api_mode": "chat_completions",
+            "default_headers": {"X-Machine-Fingerprint": "dev-machine"},
+        }
+        route = GatewayRunner._resolve_turn_agent_config(
+            runner, "hello", "chat_primary", runtime
+        )
+        agent = AIAgent(
+            model=route["model"],
+            **route["runtime"],
+            enabled_toolsets=[],
+            skip_memory=True,
+            skip_context_files=True,
+            persist_session=False,
+        )
+        try:
+            assert agent.client.default_headers["X-Machine-Fingerprint"] == "dev-machine"
+        finally:
+            agent.client.close()
 
 
 # ---------------------------------------------------------------------------

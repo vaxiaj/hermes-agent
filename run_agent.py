@@ -675,6 +675,9 @@ class AIAgent:
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         self.base_url = base_url or ""
+        from hermes_cli.runtime_provider import validate_default_headers
+        self._configured_default_headers = validate_default_headers(default_headers)
+        self._configured_headers_base_url = self.base_url.rstrip("/").lower()
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
@@ -948,8 +951,7 @@ class AIAgent:
                         },
                     }
 
-            from hermes_cli.runtime_provider import validate_default_headers
-            configured_headers = validate_default_headers(default_headers)
+            configured_headers = self._configured_default_headers
             if configured_headers:
                 merged_headers = dict(client_kwargs.get("default_headers") or {})
                 merged_headers.update(configured_headers)
@@ -1524,7 +1526,7 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
     
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', runtime=None):
         """Switch the model/provider in-place for a live agent.
 
         Called by the /model command handlers (CLI and gateway) after
@@ -1541,6 +1543,18 @@ class AIAgent:
         import logging
         from hermes_cli.providers import determine_api_mode
 
+        from hermes_cli.runtime_provider import project_runtime_agent_kwargs
+        runtime_bundle = project_runtime_agent_kwargs(runtime or {
+            "provider": new_provider,
+            "api_key": api_key,
+            "base_url": base_url,
+            "api_mode": api_mode,
+        })
+        new_provider = runtime_bundle.get("provider") or new_provider
+        api_key = runtime_bundle.get("api_key") or api_key
+        base_url = runtime_bundle.get("base_url") or base_url
+        api_mode = runtime_bundle.get("api_mode") or api_mode
+
         # ── Determine api_mode if not provided ──
         if not api_mode:
             api_mode = determine_api_mode(new_provider, base_url)
@@ -1553,6 +1567,8 @@ class AIAgent:
         self.provider = new_provider
         self.base_url = base_url or self.base_url
         self.api_mode = api_mode
+        self._configured_default_headers = dict(runtime_bundle.get("default_headers") or {})
+        self._configured_headers_base_url = self.base_url.rstrip("/").lower()
         if api_key:
             self.api_key = api_key
 
@@ -1584,6 +1600,9 @@ class AIAgent:
                 "api_key": effective_key,
                 "base_url": effective_base,
             }
+            configured_headers = runtime_bundle.get("default_headers") or {}
+            if configured_headers:
+                self._client_kwargs["default_headers"] = dict(configured_headers)
             self.client = self._create_openai_client(
                 dict(self._client_kwargs),
                 reason="switch_model",
@@ -4791,17 +4810,22 @@ class AIAgent:
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
         from agent.auxiliary_client import _OR_HEADERS
 
-        normalized = (base_url or "").lower()
+        normalized = (base_url or "").rstrip("/").lower()
+        headers = {}
         if "openrouter" in normalized:
-            self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
+            headers.update(_OR_HEADERS)
         elif "api.githubcopilot.com" in normalized:
             from hermes_cli.models import copilot_default_headers
 
-            self._client_kwargs["default_headers"] = copilot_default_headers()
+            headers.update(copilot_default_headers())
         elif "api.kimi.com" in normalized:
-            self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+            headers["User-Agent"] = "KimiCLI/1.30.0"
         elif "portal.qwen.ai" in normalized:
-            self._client_kwargs["default_headers"] = _qwen_portal_headers()
+            headers.update(_qwen_portal_headers())
+        if normalized == getattr(self, "_configured_headers_base_url", None):
+            headers.update(getattr(self, "_configured_default_headers", {}) or {})
+        if headers:
+            self._client_kwargs["default_headers"] = headers
         else:
             self._client_kwargs.pop("default_headers", None)
 

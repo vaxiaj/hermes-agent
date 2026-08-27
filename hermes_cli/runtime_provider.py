@@ -30,6 +30,45 @@ from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
 
 
+RUNTIME_AGENT_KWARG_KEYS = (
+    "api_key",
+    "base_url",
+    "provider",
+    "api_mode",
+    "default_headers",
+    "command",
+    "args",
+    "credential_pool",
+)
+
+
+def project_runtime_agent_kwargs(runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Copy the complete provider runtime bundle accepted by ``AIAgent``.
+
+    Runtime metadata must travel as one unit.  Callers must use this helper
+    instead of maintaining local field allow-lists, which silently lose new
+    authentication fields such as ``default_headers``.
+    """
+    source = runtime or {}
+    projected = {key: source.get(key) for key in RUNTIME_AGENT_KWARG_KEYS}
+    projected["default_headers"] = dict(source.get("default_headers") or {})
+    projected["args"] = list(source.get("args") or [])
+    return projected
+
+
+def runtime_agent_identity(runtime: Optional[Dict[str, Any]]) -> tuple:
+    """Return the cache identity of a complete provider runtime bundle."""
+    projected = project_runtime_agent_kwargs(runtime)
+    return (
+        projected["base_url"],
+        projected["provider"],
+        projected["api_mode"],
+        tuple(sorted(projected["default_headers"].items())),
+        projected["command"],
+        tuple(projected["args"]),
+    )
+
+
 def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
