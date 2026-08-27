@@ -2863,15 +2863,17 @@ class HermesCLI:
                 pass
         
         try:
-            runtime = runtime_override or {
+            from hermes_cli.runtime_provider import project_runtime_agent_kwargs
+            runtime = project_runtime_agent_kwargs(runtime_override or {
                 "api_key": self.api_key,
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "default_headers": dict(getattr(self, "default_headers", {}) or {}),
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
-            }
+            })
             effective_model = model_override or self.model
             try:
                 from tools.mcp_tool import discover_mcp_tools
@@ -2880,14 +2882,7 @@ class HermesCLI:
                 logging.debug("Pre-session MCP discovery failed: %s", exc)
             self.agent = AIAgent(
                 model=effective_model,
-                api_key=runtime.get("api_key"),
-                base_url=runtime.get("base_url"),
-                provider=runtime.get("provider"),
-                api_mode=runtime.get("api_mode"),
-                default_headers=runtime.get("default_headers"),
-                acp_command=runtime.get("command"),
-                acp_args=runtime.get("args"),
-                credential_pool=runtime.get("credential_pool"),
+                **runtime,
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
@@ -5746,12 +5741,7 @@ class HermesCLI:
             try:
                 bg_agent = AIAgent(
                     model=turn_route["model"],
-                    api_key=turn_route["runtime"].get("api_key"),
-                    base_url=turn_route["runtime"].get("base_url"),
-                    provider=turn_route["runtime"].get("provider"),
-                    api_mode=turn_route["runtime"].get("api_mode"),
-                    acp_command=turn_route["runtime"].get("command"),
-                    acp_args=turn_route["runtime"].get("args"),
+                    **turn_route["runtime"],
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
@@ -5884,12 +5874,7 @@ class HermesCLI:
             try:
                 btw_agent = AIAgent(
                     model=turn_route["model"],
-                    api_key=turn_route["runtime"].get("api_key"),
-                    base_url=turn_route["runtime"].get("base_url"),
-                    provider=turn_route["runtime"].get("provider"),
-                    api_mode=turn_route["runtime"].get("api_mode"),
-                    acp_command=turn_route["runtime"].get("command"),
-                    acp_args=turn_route["runtime"].get("args"),
+                    **turn_route["runtime"],
                     max_iterations=8,
                     enabled_toolsets=[],
                     quiet_mode=True,

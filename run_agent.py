@@ -1770,11 +1770,23 @@ class AIAgent:
         """Return the live main runtime for session-scoped auxiliary routing."""
         return {
             "model": getattr(self, "model", "") or "",
+            **self.export_runtime_agent_kwargs(),
+        }
+
+    def export_runtime_agent_kwargs(self) -> Dict[str, Any]:
+        """Export the complete live runtime bundle for derived agents."""
+        from hermes_cli.runtime_provider import project_runtime_agent_kwargs
+
+        return project_runtime_agent_kwargs({
             "provider": getattr(self, "provider", "") or "",
             "base_url": getattr(self, "base_url", "") or "",
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
-        }
+            "default_headers": dict(getattr(self, "_configured_default_headers", {}) or {}),
+            "command": getattr(self, "acp_command", None),
+            "args": list(getattr(self, "acp_args", []) or []),
+            "credential_pool": getattr(self, "_credential_pool", None),
+        })
 
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
@@ -2203,10 +2215,10 @@ class AIAgent:
                      contextlib.redirect_stderr(_devnull):
                     review_agent = AIAgent(
                         model=self.model,
+                        **self.export_runtime_agent_kwargs(),
                         max_iterations=8,
                         quiet_mode=True,
                         platform=self.platform,
-                        provider=self.provider,
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled

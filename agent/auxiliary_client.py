@@ -996,16 +996,19 @@ _AUTO_PROVIDER_LABELS = {
 
 _AGGREGATOR_PROVIDERS = frozenset({"openrouter", "nous"})
 
-_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode")
+_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "default_headers")
 
 
-def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, str]:
+def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Return a sanitized copy of a live main-runtime override."""
     if not isinstance(main_runtime, dict):
         return {}
-    normalized: Dict[str, str] = {}
+    normalized: Dict[str, Any] = {}
     for field in _MAIN_RUNTIME_FIELDS:
         value = main_runtime.get(field)
+        if field == "default_headers" and isinstance(value, dict):
+            normalized[field] = dict(value)
+            continue
         if isinstance(value, str) and value.strip():
             normalized[field] = value.strip()
     provider = normalized.get("provider")
@@ -1140,6 +1143,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     runtime_base_url = runtime.get("base_url", "")
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = runtime.get("api_mode", "")
+    runtime_default_headers = runtime.get("default_headers", {})
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -1178,6 +1182,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             main_model,
             explicit_base_url=explicit_base_url,
             explicit_api_key=explicit_api_key,
+            explicit_default_headers=runtime_default_headers,
             api_mode=runtime_api_mode or None,
         )
         if client is not None:
@@ -1259,6 +1264,7 @@ def resolve_provider_client(
     raw_codex: bool = False,
     explicit_base_url: str = None,
     explicit_api_key: str = None,
+    explicit_default_headers: Optional[Dict[str, str]] = None,
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
@@ -1417,6 +1423,10 @@ def resolve_provider_client(
             elif "api.githubcopilot.com" in custom_base.lower():
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
+            if explicit_default_headers:
+                merged_headers = dict(extra.get("default_headers") or {})
+                merged_headers.update(explicit_default_headers)
+                extra["default_headers"] = merged_headers
             client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base)
             return (_to_async_client(client, final_model) if async_mode
@@ -1447,11 +1457,19 @@ def resolve_provider_client(
                 custom_key = os.getenv(custom_key_env, "").strip()
             custom_key = custom_key or "no-key-required"
             if custom_base:
+                from hermes_cli.runtime_provider import validate_default_headers
+                custom_headers = validate_default_headers(
+                    custom_entry.get("default_headers")
+                )
                 final_model = _normalize_resolved_model(
                     model or custom_entry.get("model") or _read_main_model() or "gpt-4o-mini",
                     provider,
                 )
-                client = OpenAI(api_key=custom_key, base_url=custom_base)
+                client = OpenAI(
+                    api_key=custom_key,
+                    base_url=custom_base,
+                    **({"default_headers": custom_headers} if custom_headers else {}),
+                )
                 client = _wrap_if_needed(client, final_model, custom_base)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s)",
@@ -1942,7 +1960,16 @@ def _get_cached_client(
         except RuntimeError:
             pass
     runtime = _normalize_main_runtime(main_runtime)
-    runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
+    runtime_key = (
+        tuple(
+            tuple(sorted(runtime.get(field, {}).items()))
+            if field == "default_headers"
+            else runtime.get(field, "")
+            for field in _MAIN_RUNTIME_FIELDS
+        )
+        if provider == "auto"
+        else ()
+    )
     cache_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", loop_id, runtime_key)
     with _client_cache_lock:
         if cache_key in _client_cache:

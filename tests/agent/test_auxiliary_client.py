@@ -910,6 +910,31 @@ class TestTaskSpecificOverrides:
         assert calls[0][1] == "gpt-5.4"
         assert calls[0][2]["api_mode"] == "codex_responses"
 
+    def test_resolve_auto_preserves_live_custom_runtime_headers(self):
+        calls = []
+
+        def _fake_resolve(provider, model=None, *args, **kwargs):
+            calls.append((provider, model, kwargs))
+            return MagicMock(), model
+
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_fake_resolve):
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "custom",
+                    "model": "chat_primary",
+                    "base_url": "http://127.0.0.1:8080/api/llm",
+                    "api_key": "sk-test",
+                    "api_mode": "chat_completions",
+                    "default_headers": {"X-Machine-Fingerprint": "dev-machine"},
+                }
+            )
+
+        assert client is not None
+        assert model == "chat_primary"
+        assert calls[0][2]["explicit_default_headers"] == {
+            "X-Machine-Fingerprint": "dev-machine"
+        }
+
     def test_explicit_compression_pin_still_wins_over_live_main_runtime(self, monkeypatch, tmp_path):
         """Task-level compression config should beat a live session override."""
         hermes_home = tmp_path / "hermes"

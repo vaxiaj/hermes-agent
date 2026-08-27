@@ -155,6 +155,48 @@ def test_gateway_agent_cache_identity_changes_with_custom_headers():
     )
 
 
+def test_live_runtime_export_keeps_complete_custom_bundle():
+    with patch.object(AIAgent, "_create_openai_client", return_value=MagicMock()):
+        agent = AIAgent(
+            model="chat_primary",
+            provider="custom",
+            api_key="sk-test",
+            base_url="http://127.0.0.1:8080/api/llm",
+            default_headers={"X-Machine-Fingerprint": "dev-machine"},
+        )
+    runtime = agent.export_runtime_agent_kwargs()
+    assert runtime["default_headers"] == {"X-Machine-Fingerprint": "dev-machine"}
+    assert set(runtime) == {
+        "api_key", "base_url", "provider", "api_mode", "default_headers",
+        "command", "args", "credential_pool",
+    }
+
+
+def test_chaotic_endpoint_rotation_never_loses_or_leaks_custom_headers():
+    import random
+
+    local = "http://127.0.0.1:8080/api/llm"
+    foreign = ["https://other.example/v1", "https://openrouter.ai/api/v1"]
+    with patch.object(AIAgent, "_create_openai_client", return_value=MagicMock()):
+        agent = AIAgent(
+            model="chat_primary",
+            provider="custom",
+            api_key="sk-test",
+            base_url=local,
+            default_headers={"X-Machine-Fingerprint": "dev-machine"},
+        )
+
+    rng = random.Random(37)
+    for _ in range(200):
+        endpoint = rng.choice([local, local + "/", *foreign])
+        agent._apply_client_headers_for_base_url(endpoint)
+        headers = agent._client_kwargs.get("default_headers", {})
+        if endpoint.rstrip("/").lower() == local.lower():
+            assert headers["X-Machine-Fingerprint"] == "dev-machine"
+        else:
+            assert "X-Machine-Fingerprint" not in headers
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()
